@@ -87,9 +87,9 @@ else
 fi
 
 # -------------------------------
-# 3. Добавляем @reboot запуск с задержкой 30 секунд
+# 3. Добавляем @reboot запуск с задержкой 60 секунд
 # -------------------------------
-CRON_LINE_BOOT="@reboot sleep 30 && $SCRIPT"
+CRON_LINE_BOOT="@reboot sleep 60 && $SCRIPT"
 if ! grep -Fq "@reboot" /etc/crontabs/root 2>/dev/null; then
     echo "$CRON_LINE_BOOT" >> /etc/crontabs/root
     echo "=== Added @reboot cron job ==="
