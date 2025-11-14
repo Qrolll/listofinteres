@@ -1,10 +1,11 @@
 #!/bin/sh
 ###############################################################################
-# INSTALL.SH — установка автообновления файла domlist.lst с GitHub
-# с логированием ошибок на OpenWrt
+# INSTALL.SH — автообновление файла domlist.lst с GitHub
+# с логированием, автозапуском и перезапуском службы podkop
+# перезапуск только при реальном обновлении файла
 ###############################################################################
 
-echo "=== Installing GitHub auto-update service (with logging) ==="
+echo "=== Installing GitHub auto-update service (update-triggered podkop restart) ==="
 
 GITHUB_URL="https://raw.githubusercontent.com/Qrolll/listofinteres/refs/heads/main/domlist.lst"
 SCRIPT="/usr/bin/getgithub.sh"
@@ -44,15 +45,30 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Флаг, был ли файл обновлён
+UPDATED=0
+
 # Если файл не изменился — ничего не делаем
-if [ -f "$DEST_FILE" ] && cmp -s "$TMP_FILE" "$DEST_FILE"; then
+if [ ! -f "$DEST_FILE" ] || ! cmp -s "$TMP_FILE" "$DEST_FILE"; then
+    # Обновляем основной файл
+    mv "$TMP_FILE" "$DEST_FILE"
+    UPDATED=1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] File updated." >> "$LOG_FILE"
+else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] File not modified. Nothing to update." >> "$LOG_FILE"
-    exit 0
 fi
 
-# Обновляем основной файл
-mv "$TMP_FILE" "$DEST_FILE"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Update complete." >> "$LOG_FILE"
+# -------------------------------
+# Перезапуск службы podkop только при обновлении
+# -------------------------------
+if [ $UPDATED -eq 1 ]; then
+    if [ -x /etc/init.d/podkop ]; then
+        /etc/init.d/podkop restart
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Service 'podkop' restarted." >> "$LOG_FILE"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Service 'podkop' not found, skipping restart." >> "$LOG_FILE"
+    fi
+fi
 EOF
 
 # Подставляем URL
@@ -62,25 +78,27 @@ chmod +x "$SCRIPT"
 # -------------------------------
 # 2. Добавляем cron на каждый день в 03:45
 # -------------------------------
-CRON_LINE="45 3 * * * $SCRIPT"
+CRON_LINE_DAILY="45 3 * * * $SCRIPT"
 if ! grep -Fq "$SCRIPT" /etc/crontabs/root 2>/dev/null; then
-    echo "$CRON_LINE" >> /etc/crontabs/root
-    echo "=== Added cron job: 03:45 daily ==="
+    echo "$CRON_LINE_DAILY" >> /etc/crontabs/root
+    echo "=== Added daily cron job: 03:45 ==="
 else
-    echo "=== Cron job already exists. Skipped. ==="
+    echo "=== Daily cron job already exists. Skipped. ==="
+fi
+
+# -------------------------------
+# 3. Добавляем @reboot запуск с задержкой 30 секунд
+# -------------------------------
+CRON_LINE_BOOT="@reboot sleep 30 && $SCRIPT"
+if ! grep -Fq "@reboot" /etc/crontabs/root 2>/dev/null; then
+    echo "$CRON_LINE_BOOT" >> /etc/crontabs/root
+    echo "=== Added @reboot cron job ==="
+else
+    echo "=== @reboot cron job already exists. Skipped. ==="
 fi
 
 # Перезапускаем cron
 /etc/init.d/cron restart
-
-# -------------------------------
-# 3. Добавляем запуск при старте
-# -------------------------------
-RC_LOCAL="/etc/rc.local"
-if ! grep -Fq "$SCRIPT" "$RC_LOCAL" 2>/dev/null; then
-    sed -i -e "/^exit 0/i $SCRIPT &" "$RC_LOCAL"
-    echo "=== Added boot-time execution ==="
-fi
 
 # -------------------------------
 # 4. Запускаем скрипт сразу
@@ -90,4 +108,5 @@ echo "=== Running first update ==="
 
 echo "=== Installation complete! ==="
 echo "File domlist.lst will sync from GitHub at boot and daily at 03:45."
+echo "Service 'podkop' will be restarted only if the file is updated."
 echo "Logs are available at $LOG_FILE"
