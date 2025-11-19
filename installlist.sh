@@ -1,31 +1,16 @@
 #!/bin/sh
-###############################################################################
-# INSTALL.SH — автообновление domlist.lst с GitHub на OpenWrt
-# с логированием, автозапуском и перезапуском podkop
-###############################################################################
 
-echo "=== Installing GitHub auto-update service ==="
+URL1="https://raw.githubusercontent.com/Qrolll/listofinteres/refs/heads/main/domlist.lst"
+URL2="https://raw.githubusercontent.com/Qrolll/listofinteres/refs/heads/main/firstlist.lst"
 
-GITHUB_URL="https://raw.githubusercontent.com/Qrolll/listofinteres/refs/heads/main/domlist.lst"
-SCRIPT="/usr/bin/getgithub.sh"
-INIT_SCRIPT="/etc/init.d/getgithub"
 DEST_DIR="/etc/myfiles"
 TMP_DIR="/tmp/github_download"
 LOG_FILE="/var/log/getgithub.log"
 
-# -------------------------------
-# 1. Создаём рабочий скрипт /usr/bin/getgithub.sh
-# -------------------------------
-mkdir -p "$DEST_DIR" "$TMP_DIR" "/var/log"
-
-cat << 'EOF' > "$SCRIPT"
-#!/bin/sh
-URL="__REPLACE_URL__"
-DEST_DIR="/etc/myfiles"
-DEST_FILE="$DEST_DIR/domlist.lst"
-TMP_DIR="/tmp/github_download"
-TMP_FILE="$TMP_DIR/domlist.lst"
-LOG_FILE="/var/log/getgithub.log"
+FILES="
+domlist.lst $URL1
+firstlist.lst $URL2
+"
 
 mkdir -p "$DEST_DIR" "$TMP_DIR"
 
@@ -38,23 +23,33 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Скачиваем через curl
-curl -fsSL "$URL" -o "$TMP_FILE" 2>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Download failed. Aborting." >> "$LOG_FILE"
-    exit 1
-fi
-
 UPDATED=0
-if [ ! -f "$DEST_FILE" ] || ! cmp -s "$TMP_FILE" "$DEST_FILE"; then
-    mv "$TMP_FILE" "$DEST_FILE"
-    UPDATED=1
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] File updated." >> "$LOG_FILE"
-else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] File not modified." >> "$LOG_FILE"
-fi
 
-# Перезапуск службы podkop только при обновлении
+# Обработка всех файлов
+echo "$FILES" | while read FILENAME URL; do
+    [ -z "$FILENAME" ] && continue
+
+    DEST_FILE="$DEST_DIR/$FILENAME"
+    TMP_FILE="$TMP_DIR/$FILENAME"
+
+    # Скачиваем
+    curl -fsSL "$URL" -o "$TMP_FILE" 2>> "$LOG_FILE"
+    if [ $? -ne 0 ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Download failed for $FILENAME." >> "$LOG_FILE"
+        continue
+    fi
+
+    # Проверяем изменения
+    if [ ! -f "$DEST_FILE" ] || ! cmp -s "$TMP_FILE" "$DEST_FILE"; then
+        mv "$TMP_FILE" "$DEST_FILE"
+        UPDATED=1
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Updated $FILENAME." >> "$LOG_FILE"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $FILENAME not modified." >> "$LOG_FILE"
+    fi
+done
+
+# Перезапуск podkop если что-то обновилось
 if [ $UPDATED -eq 1 ]; then
     if [ -x /etc/init.d/podkop ]; then
         /etc/init.d/podkop restart
@@ -63,53 +58,34 @@ if [ $UPDATED -eq 1 ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Service 'podkop' not found, skipping restart." >> "$LOG_FILE"
     fi
 fi
-EOF
 
-# Подставляем URL
-sed -i "s|__REPLACE_URL__|$GITHUB_URL|g" "$SCRIPT"
-chmod +x "$SCRIPT"
+# ----------------------
+# Вывод итоговой информации
+# ----------------------
 
-# -------------------------------
-# 2. Создаём init-скрипт /etc/init.d/getgithub
-# -------------------------------
-cat << 'EOF' > "$INIT_SCRIPT"
-#!/bin/sh /etc/rc.common
-# Init-скрипт для обновления domlist.lst через procd
-START=99
-USE_PROCD=1
-PROG="/usr/bin/getgithub.sh"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Final file info:" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
 
-start_service() {
-    # Ждем 30 секунд, чтобы сеть поднялась
-    procd_open_instance
-    procd_set_param command sh -c "sleep 30 && $PROG"
-    procd_close_instance
-}
-EOF
+for F in domlist.lst firstlist.lst; do
+    FILE_PATH="$DEST_DIR/$F"
 
-chmod +x "$INIT_SCRIPT"
-$INIT_SCRIPT enable
+    if [ -f "$FILE_PATH" ]; then
+        SIZE=$(wc -c < "$FILE_PATH")
+        HASH=$(sha256sum "$FILE_PATH" | awk '{print $1}')
 
-# -------------------------------
-# 3. Настройка ежедневного cron
-# -------------------------------
-CRON_LINE_DAILY="45 3 * * * $SCRIPT"
-if ! grep -Fq "$SCRIPT" /etc/crontabs/root 2>/dev/null; then
-    echo "$CRON_LINE_DAILY" >> /etc/crontabs/root
-    echo "=== Added daily cron job: 03:45 ==="
-else
-    echo "=== Daily cron job already exists. Skipped. ==="
-fi
+        echo "$FILE_PATH"
+        echo "Size: $SIZE bytes"
+        echo "SHA256: $HASH"
+        echo ""
 
-/etc/init.d/cron restart
+        echo "$FILE_PATH" >> "$LOG_FILE"
+        echo "   Size: $SIZE bytes" >> "$LOG_FILE"
+        echo "   SHA256: $HASH" >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+    else
+        echo "$FILE_PATH (NOT FOUND)"
+        echo "$FILE_PATH (NOT FOUND)" >> "$LOG_FILE"
+    fi
+done
 
-# -------------------------------
-# 4. Первый запуск скрипта
-# -------------------------------
-echo "=== Running first update ==="
-"$SCRIPT"
-
-echo "=== Installation complete! ==="
-echo "File domlist.lst will sync from GitHub at boot and daily at 03:45."
-echo "Service 'podkop' will be restarted only if the file is updated."
-echo "Logs are available at $LOG_FILE"
+exit 0
